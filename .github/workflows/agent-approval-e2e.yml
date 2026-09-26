@@ -1,0 +1,80 @@
+name: Agent approval identity E2E
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [approval-e2e-base-20260926]
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+jobs:
+  producer:
+    if: ${{ github.event.action == 'opened' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_BASE_URL: http://127.0.0.1:9
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_AUTOUPDATER: "1"
+      DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+      - name: Exercise main Action Git identity setup
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: sk-ant-local-e2e-invalid
+          prompt: Return immediately without modifying files.
+          use_commit_signing: "false"
+          bot_id: ${{ github.head_ref == 'approval-e2e-positive-2098' && '209825114' || '41898282' }}
+      - name: Commit with the identity left by the Action
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EXPECTED_BOT_ID: ${{ github.head_ref == 'approval-e2e-positive-2098' && '209825114' || '41898282' }}
+          NEGATIVE_CONTROL: ${{ github.head_ref == 'approval-e2e-negative' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          configured="$(git config user.email || true)"
+          expected="${EXPECTED_BOT_ID}+claude[bot]@users.noreply.github.com"
+          test "$configured" = "$expected"
+          if [ "$NEGATIVE_CONTROL" = "true" ]; then
+            git config user.email noreply@anthropic.com
+          fi
+          final="$(git config user.email)"
+          printf 'head_ref=%s\naction_configured_email=%s\ncommit_email=%s\nrun_id=%s\n' \
+            "$HEAD_REF" "$configured" "$final" "$GITHUB_RUN_ID" > approval-e2e-evidence.txt
+          git add approval-e2e-evidence.txt
+          git commit -m "test: record Action-configured committer identity"
+          git push origin "HEAD:$HEAD_REF"
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action/agent-approval-check@v1
+        with:
+          github_token: ${{ github.token }}
+          required_approvals: "2"
+          protected_bases: approval-e2e-base-20260926
+  evidence:
+    needs: gate
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Print real GraphQL committer identity and posted statuses
+        shell: bash
+        run: |
+          gh api graphql \
+            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){commits(first:100){nodes{commit{oid committer{name email user{login}}}}}}}}' \
+            -f owner="$GITHUB_REPOSITORY_OWNER" \
+            -f name="${GITHUB_REPOSITORY#*/}" \
+            -F number="$PR_NUMBER"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/status" \
+            --jq '{sha, state, statuses: [.statuses[] | {context, state, description}]}'
