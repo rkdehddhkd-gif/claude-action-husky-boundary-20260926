@@ -1,0 +1,4 @@
+head_ref=approval-e2e-negative
+action_configured_email=41898282+claude[bot]@users.noreply.github.com
+commit_email=noreply@anthropic.com
+run_id=36248859452
